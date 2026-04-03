@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal, Dict
+from typing import List, Optional, Literal, Dict, TypedDict
 from dotenv import load_dotenv
 import os
 import time
@@ -12,26 +12,25 @@ load_dotenv()
 # -----------------------------
 # Config
 # -----------------------------
-APP_API_KEY = os.getenv("SS_API_KEY", "")  # your own API key for participants
+APP_API_KEY = os.getenv("SS_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-# Simple in-memory rate limit (per process, global)
 RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MIN", "60"))
+DEBUG_RETURN_PROMPT = os.getenv("DEBUG_RETURN_PROMPT", "false").lower() == "true"
+
 _bucket = {"ts_min": 0, "count": 0}
 
-# Minimal participant registry for small volunteer study
-# Replace these demo tokens before real deployment.
 PARTICIPANTS = {
-    "P001": {"token": "replace_with_real_token_001", "enabled": True},
-    "P002": {"token": "replace_with_real_token_002", "enabled": True},
-    "P003": {"token": "replace_with_real_token_003", "enabled": True},
-    "P004": {"token": "replace_with_real_token_004", "enabled": True},
-    "P005": {"token": "replace_with_real_token_005", "enabled": True},
-    "P006": {"token": "replace_with_real_token_006", "enabled": True},
-    "P007": {"token": "replace_with_real_token_007", "enabled": True},
-    "P008": {"token": "replace_with_real_token_008", "enabled": True},
+    "P001": {"token": "a7360bf1aaba190a14109675b3455828", "enabled": True},
+    "P002": {"token": "39480091099b4f03bf2907437e473740", "enabled": True},
+    "P003": {"token": "6378744f406d868c0983184e7dcd4e8f", "enabled": True},
+    "P004": {"token": "ad339daf2bec1a406132e1edc7c710bf", "enabled": True},
+    "P005": {"token": "e0ea411edde4cee22bac24b4f1c08036", "enabled": True},
+    "P006": {"token": "feb90b7614482a80a2b17efb460f52c7", "enabled": True},
+    "P007": {"token": "33a57b35fa7cbbcaffa1610c07ee21b9", "enabled": True},
+    "P008": {"token": "0d122519fdfb995fdfd0cee9845eaee4", "enabled": True},
 }
 
 
@@ -47,40 +46,33 @@ def rate_limit_ok() -> bool:
 # -----------------------------
 # Schema
 # -----------------------------
-Strategy = Literal["UNDERSTANDING", "COMFORTING", "EVOKING", "SCAFFOLDING_HABITS"]
+Strategy = Literal[
+    "UNDERSTANDING",
+    "COMFORTING",
+    "EVOKING",
+    "SCAFFOLDING_HABITS",
+    "EMERGENCY",
+    "REFLECTION",
+]
+
 Tone = Literal["gentle", "neutral", "humorous", "strict"]
-MentalState = Optional[Literal["stress", "boredom", "inertia", "other"]]
+MentalState = Optional[Literal["stress", "bored", "inertia", "other"]]
 
 
 class GenerateRequest(BaseModel):
-    # Minimal participant auth for volunteer study
     participant_id: str = Field(..., min_length=1, max_length=50)
     participant_token: str = Field(..., min_length=1, max_length=200)
 
-    # Word slots / context
-    time_local: Optional[str] = None        # e.g., "22:36"
-    place: Optional[str] = None             # e.g., "library"
-    total_today_min: Optional[int] = None   # computed
-    since_last_open_min: Optional[int] = None  # computed
+    time_local: Optional[str] = None
+    total_today_min: Optional[int] = None
+    since_last_open_min: Optional[int] = None
 
     mental_state: MentalState = None
     user_goals: List[str] = Field(default_factory=list)
     habit: Optional[str] = None
 
-    # Control
     strategy: Strategy
     tone_style: Tone = "gentle"
-
-    # Safety + output constraints
-    max_words: int = 30
-    num_sentences: int = 2
-    gender_neutral: bool = True
-    no_blame: bool = True
-    no_exaggeration: bool = True
-    no_medical: bool = True
-
-    # Dev
-    return_prompt: bool = False
 
 
 class GenerateResponse(BaseModel):
@@ -88,6 +80,71 @@ class GenerateResponse(BaseModel):
     message: str
     strategy: Strategy
     prompt_used: Optional[str] = None
+
+
+# -----------------------------
+# Server-side generation policy
+# -----------------------------
+class StrategyPolicy(TypedDict):
+    max_words: int
+    num_sentences: int
+    strategy_instruction: str
+
+
+DEFAULT_GENDER_NEUTRAL = True
+DEFAULT_NO_BLAME = True
+DEFAULT_NO_EXAGGERATION = True
+DEFAULT_NO_MEDICAL = True
+DEFAULT_NO_DIAGNOSIS = True
+
+STRATEGY_POLICIES: Dict[str, StrategyPolicy] = {
+    "UNDERSTANDING": {
+        "max_words": 30,
+        "num_sentences": 2,
+        "strategy_instruction": (
+            "Use a caring tone. Acknowledge the situation and invite reflection with one gentle question."
+        ),
+    },
+    "COMFORTING": {
+        "max_words": 30,
+        "num_sentences": 2,
+        "strategy_instruction": (
+            "Use empathy to soothe stress, validate feelings, and suggest a small calming action."
+        ),
+    },
+    "EVOKING": {
+        "max_words": 30,
+        "num_sentences": 2,
+        "strategy_instruction": (
+            "Remind the user of their goals and autonomy; invite one tiny goal-aligned step first."
+        ),
+    },
+    "SCAFFOLDING_HABITS": {
+        "max_words": 30,
+        "num_sentences": 2,
+        "strategy_instruction": (
+            "Give one concrete micro-habit or environmental tweak to interrupt the loop."
+        ),
+    },
+    "EMERGENCY": {
+        "max_words": 10,
+        "num_sentences": 1,
+        "strategy_instruction": (
+            "Be extremely brief, calm, and direct. Focus only on interrupting the loop with one immediate action."
+        ),
+    },
+    "REFLECTION": {
+        "max_words": 40,
+        "num_sentences": 2,
+        "strategy_instruction": (
+            "Invite brief self-reflection and intentional choice. Keep it warm, concise, and autonomy-supportive."
+        ),
+    },
+}
+
+
+def get_strategy_policy(strategy: Strategy) -> StrategyPolicy:
+    return STRATEGY_POLICIES[strategy]
 
 
 # -----------------------------
@@ -115,72 +172,82 @@ def require_participant(participant_id: str, participant_token: str):
 # Prompt template
 # -----------------------------
 def build_prompt(req: GenerateRequest) -> Dict[str, str]:
-    # 1) Task setup / background
+    policy = get_strategy_policy(req.strategy)
+
     background = (
         "You are a digital wellbeing coach. Generate a short, persuasive, non-coercive message "
-        "to help the user pause and choose intentionally, not to shame them."
+        "to help the user pause and choose intentionally. Your role is to support reflection and agency, "
+        "not to shame, diagnose, or pressure the user."
     )
 
-    # 2) Description of current context
     ctx_lines = []
+
     if req.time_local:
-        ctx_lines.append(f"- Time: {req.time_local}")
-    if req.place:
-        ctx_lines.append(f"- Place: {req.place}")
+        ctx_lines.append(f"- Local time: {req.time_local}")
     if req.total_today_min is not None:
-        ctx_lines.append(f"- Total TikTok today: {req.total_today_min} minutes")
+        ctx_lines.append(f"- Total short-video/social media use today: {req.total_today_min} minutes")
     if req.since_last_open_min is not None:
         ctx_lines.append(f"- Time since last open: {req.since_last_open_min} minutes")
     if req.mental_state:
-        ctx_lines.append(f"- Mental state: {req.mental_state}")
+        ctx_lines.append(f"- Reported mental state: {req.mental_state}")
     if req.user_goals:
         ctx_lines.append(f"- User goals: {', '.join(req.user_goals)}")
     if req.habit:
-        ctx_lines.append(f"- Habit/context: {req.habit}")
+        ctx_lines.append(f"- Habit context: {req.habit}")
+    if req.tone_style:
+        ctx_lines.append(f"- Preferred tone style: {req.tone_style}")
 
-    context = "Current user data:\n" + ("\n".join(ctx_lines) if ctx_lines else "- (no extra context)")
+    context = "Current user context:\n" + ("\n".join(ctx_lines) if ctx_lines else "- (no extra context)")
 
-    # 3) Constraints
     rules = [
-        f"- Output must be <= {req.max_words} words.",
-        f"- Output must be exactly {req.num_sentences} sentences (no bullet points).",
-        "- Provide one small alternative action the user can do now."
+        f"- Output must be no more than {policy['max_words']} words.",
+        f"- Output must be exactly {policy['num_sentences']} sentence(s).",
+        "- Do not use bullet points, numbering, emojis, quotation marks, or hashtags.",
+        "- Include one small, realistic action the user can do right now.",
+        "- Keep the message natural and conversational.",
     ]
 
-    if req.gender_neutral:
+    if DEFAULT_GENDER_NEUTRAL:
         rules.append("- Use gender-neutral language.")
-    if req.no_exaggeration:
-        rules.append("- Avoid exaggerated praise or dramatic wording.")
-    if req.no_blame:
-        rules.append("- Do not blame or judge the user.")
-    if req.no_medical:
-        rules.append("- Do not provide medical advice or diagnose conditions.")
+    if DEFAULT_NO_EXAGGERATION:
+        rules.append("- Avoid exaggerated praise, dramatic wording, or overstatement.")
+    if DEFAULT_NO_BLAME:
+        rules.append("- Do not blame, shame, scold, or judge the user.")
+    if DEFAULT_NO_MEDICAL:
+        rules.append("- Do not provide medical advice or mention treatment.")
+    if DEFAULT_NO_DIAGNOSIS:
+        rules.extend([
+            "- Do not diagnose, assess, or label the user with any medical, psychiatric, or clinical condition.",
+            "- Do not describe the user as addicted, dependent, compulsive, disordered, or symptomatic.",
+            "- Do not imply certainty that the user has a condition or problem identity.",
+        ])
 
     optimization = "Constraints:\n" + "\n".join(rules)
 
-    # 4) Strategy instruction
-    strategy_map = {
-        "UNDERSTANDING": (
-            "Use a caring tone. Acknowledge the situation and invite reflection with one gentle question."
-        ),
-        "COMFORTING": (
-            "Use empathy to soothe stress, validate feelings, and suggest a small calming action."
-        ),
-        "EVOKING": (
-            "Remind them of their goals and autonomy; invite them to do a tiny goal-aligned step first."
-        ),
-        "SCAFFOLDING_HABITS": (
-            "Give a concrete micro-habit or environmental tweak to interrupt the loop."
-        ),
-    }
+    strategy_text = (
+        f"Persuasion strategy: {req.strategy}\n"
+        f"{policy['strategy_instruction']}"
+    )
 
-    strategy_text = f"Persuasion strategy: {req.strategy}\n{strategy_map[req.strategy]}"
+    tone_map = {
+        "gentle": "Use warm, soft, non-pushy wording.",
+        "neutral": "Use calm, clear, balanced wording.",
+        "humorous": "Use light, kind humor only if it stays respectful and subtle.",
+        "strict": "Use firm but non-shaming wording. Stay respectful and brief.",
+    }
+    tone_text = f"Tone guidance: {tone_map[req.tone_style]}"
 
     system_msg = (
         background + "\n\n"
-        "You must follow the constraints strictly. Return only the final message text."
+        "You must follow all constraints strictly. Return only the final message text, with no explanation."
     )
-    user_msg = context + "\n\n" + optimization + "\n\n" + strategy_text
+
+    user_msg = (
+        context + "\n\n" +
+        optimization + "\n\n" +
+        strategy_text + "\n\n" +
+        tone_text
+    )
 
     return {"system": system_msg, "user": user_msg}
 
@@ -225,9 +292,8 @@ async def call_llm(system: str, user: str) -> str:
 # -----------------------------
 # FastAPI app
 # -----------------------------
-app = FastAPI(title="ScrollSanity LLM API", version="1.1.0")
+app = FastAPI(title="ScrollSanity LLM API", version="1.2.1")
 
-# CORS is not critical for Android-only usage, but harmless to keep for now.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -261,5 +327,5 @@ async def generate(req: GenerateRequest, x_api_key: str = Header(default="")):
         ok=True,
         message=msg,
         strategy=req.strategy,
-        prompt_used=(prompt["system"] + "\n\n" + prompt["user"]) if req.return_prompt else None,
+        prompt_used=(prompt["system"] + "\n\n" + prompt["user"]) if DEBUG_RETURN_PROMPT else None,
     )
