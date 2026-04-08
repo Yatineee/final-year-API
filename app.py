@@ -22,17 +22,6 @@ DEBUG_RETURN_PROMPT = os.getenv("DEBUG_RETURN_PROMPT", "false").lower() == "true
 
 _bucket = {"ts_min": 0, "count": 0}
 
-PARTICIPANTS = {
-    "P001": {"token": "a7360bf1aaba190a14109675b3455828", "enabled": True},
-    "P002": {"token": "39480091099b4f03bf2907437e473740", "enabled": True},
-    "P003": {"token": "6378744f406d868c0983184e7dcd4e8f", "enabled": True},
-    "P004": {"token": "ad339daf2bec1a406132e1edc7c710bf", "enabled": True},
-    "P005": {"token": "e0ea411edde4cee22bac24b4f1c08036", "enabled": True},
-    "P006": {"token": "feb90b7614482a80a2b17efb460f52c7", "enabled": True},
-    "P007": {"token": "33a57b35fa7cbbcaffa1610c07ee21b9", "enabled": True},
-    "P008": {"token": "0d122519fdfb995fdfd0cee9845eaee4", "enabled": True},
-}
-
 
 def rate_limit_ok() -> bool:
     now_min = int(time.time() // 60)
@@ -60,9 +49,6 @@ MentalState = Optional[Literal["stress", "bored", "inertia", "other"]]
 
 
 class GenerateRequest(BaseModel):
-    participant_id: str = Field(..., min_length=1, max_length=50)
-    participant_token: str = Field(..., min_length=1, max_length=200)
-
     time_local: Optional[str] = None
     total_today_min: Optional[int] = None
     since_last_open_min: Optional[int] = None
@@ -153,19 +139,6 @@ def get_strategy_policy(strategy: Strategy) -> StrategyPolicy:
 def require_key(x_api_key: str):
     if APP_API_KEY and x_api_key != APP_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
-
-
-def require_participant(participant_id: str, participant_token: str):
-    participant = PARTICIPANTS.get(participant_id)
-
-    if not participant:
-        raise HTTPException(status_code=403, detail="Unknown participant")
-
-    if not participant.get("enabled", False):
-        raise HTTPException(status_code=403, detail="Participant disabled")
-
-    if participant.get("token") != participant_token:
-        raise HTTPException(status_code=403, detail="Invalid participant token")
 
 
 # -----------------------------
@@ -292,7 +265,7 @@ async def call_llm(system: str, user: str) -> str:
 # -----------------------------
 # FastAPI app
 # -----------------------------
-app = FastAPI(title="ScrollSanity LLM API", version="1.2.1")
+app = FastAPI(title="ScrollSanity LLM API", version="1.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -311,7 +284,6 @@ async def health():
 @app.post("/v1/generate", response_model=GenerateResponse)
 async def generate(req: GenerateRequest, x_api_key: str = Header(default="")):
     require_key(x_api_key)
-    require_participant(req.participant_id, req.participant_token)
 
     if not rate_limit_ok():
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
