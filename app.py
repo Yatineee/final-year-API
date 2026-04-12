@@ -134,6 +134,30 @@ def get_strategy_policy(strategy: Strategy) -> StrategyPolicy:
 
 
 # -----------------------------
+# Language inference
+# -----------------------------
+def infer_language(req: GenerateRequest) -> str:
+    text_parts: List[str] = []
+
+    if req.habit:
+        text_parts.append(req.habit)
+
+    if req.user_goals:
+        text_parts.extend(req.user_goals)
+
+    combined = " ".join(text_parts)
+
+    if any('\u4e00' <= ch <= '\u9fff' for ch in combined):
+        return "zh"
+
+    chinese_punctuation = "，。！？；：、（）《》“”‘’"
+    if any(ch in chinese_punctuation for ch in combined):
+        return "zh"
+
+    return "en"
+
+
+# -----------------------------
 # Security helpers
 # -----------------------------
 def require_key(x_api_key: str):
@@ -146,6 +170,7 @@ def require_key(x_api_key: str):
 # -----------------------------
 def build_prompt(req: GenerateRequest) -> Dict[str, str]:
     policy = get_strategy_policy(req.strategy)
+    inferred_lang = infer_language(req)
 
     background = (
         "You are a digital wellbeing coach. Generate a short, persuasive, non-coercive message "
@@ -195,6 +220,15 @@ def build_prompt(req: GenerateRequest) -> Dict[str, str]:
             "- Do not imply certainty that the user has a condition or problem identity.",
         ])
 
+    if inferred_lang == "zh":
+        rules.extend([
+            "- If the user's context contains Chinese, reply primarily in natural Simplified Chinese.",
+            "- Avoid translation-like wording.",
+            "- A small amount of English is acceptable only if necessary, but prefer Chinese overall.",
+        ])
+    else:
+        rules.append("- Reply in natural English.")
+
     optimization = "Constraints:\n" + "\n".join(rules)
 
     strategy_text = (
@@ -210,6 +244,12 @@ def build_prompt(req: GenerateRequest) -> Dict[str, str]:
     }
     tone_text = f"Tone guidance: {tone_map[req.tone_style]}"
 
+    language_text = (
+        "Language preference: Simplified Chinese."
+        if inferred_lang == "zh"
+        else "Language preference: English."
+    )
+
     system_msg = (
         background + "\n\n"
         "You must follow all constraints strictly. Return only the final message text, with no explanation."
@@ -219,7 +259,8 @@ def build_prompt(req: GenerateRequest) -> Dict[str, str]:
         context + "\n\n" +
         optimization + "\n\n" +
         strategy_text + "\n\n" +
-        tone_text
+        tone_text + "\n\n" +
+        language_text
     )
 
     return {"system": system_msg, "user": user_msg}
@@ -265,7 +306,7 @@ async def call_llm(system: str, user: str) -> str:
 # -----------------------------
 # FastAPI app
 # -----------------------------
-app = FastAPI(title="ScrollSanity LLM API", version="1.3.0")
+app = FastAPI(title="ScrollSanity LLM API", version="1.4.0")
 
 app.add_middleware(
     CORSMiddleware,
